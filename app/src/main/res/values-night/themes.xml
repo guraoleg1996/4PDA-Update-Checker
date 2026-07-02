@@ -3,15 +3,18 @@
     <style name="Base.Theme._4PDAUpdateChecker" parent="Theme.Material3.DayNight.NoActionBar">
         <!-- Customize your dark theme here. -->
         <item name="colorPrimary">#2196F3</item>
+        <item name="toolbarBackground">?attr/colorPrimary</item>
         <item name="android:navigationBarColor">?attr/colorPrimary</item>
     </style>
 
     <style name="AppTheme_Amoled" parent="Theme._4PDAUpdateChecker">
         <item name="android:windowBackground">#000000</item>
         <item name="android:colorBackground">#000000</item>
-        <item name="colorPrimary">#000000</item>
         <item name="colorSurface">#000000</item>
+        <item name="colorSurfaceVariant">#000000</item>
         <item name="colorSurfaceContainer">#000000</item>
+        <item name="toolbarBackground">#000000</item>
+        <item name="colorOutline">#FFFFFF</item>
         <item name="android:statusBarColor">#000000</item>
         <item name="android:navigationBarColor">#000000</item>
     </style>
