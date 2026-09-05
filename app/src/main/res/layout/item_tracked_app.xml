@@ -168,6 +168,7 @@
                 android:text="НА СТРАНИЦУ" />
 
             <View
+                android:id="@+id/btnSpacer"
                 android:layout_width="8dp"
                 android:layout_height="1dp" />
 

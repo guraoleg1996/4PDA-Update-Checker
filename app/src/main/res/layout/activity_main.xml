@@ -18,6 +18,15 @@
             app:titleTextColor="@android:color/white"
             app:title="4PDA Update Checker" />
 
+        <com.google.android.material.progressindicator.LinearProgressIndicator
+            android:id="@+id/updateProgress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:indeterminate="true"
+            android:visibility="gone"
+            app:trackThickness="3dp"
+            app:indicatorColor="?attr/colorPrimary" />
+
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"

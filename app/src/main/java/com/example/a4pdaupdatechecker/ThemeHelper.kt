@@ -39,13 +39,12 @@ object ThemeHelper {
      * Настраивает цвет иконок статусбара в зависимости от текущей темы.
      */
     fun updateStatusBarIcons(activity: Activity) {
-        val isAmoled = isAmoledEnabled(activity)
         val currentNightMode = activity.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
         val isNight = currentNightMode == android.content.res.Configuration.UI_MODE_NIGHT_YES
         
         // В светлой теме иконки должны быть темными. 
         // В темной и AMOLED - светлыми.
-        val useLightIcons = !isNight && !isAmoled
+        val useLightIcons = !isNight
         
         val controller = WindowInsetsControllerCompat(activity.window, activity.window.decorView)
         controller.isAppearanceLightStatusBars = useLightIcons

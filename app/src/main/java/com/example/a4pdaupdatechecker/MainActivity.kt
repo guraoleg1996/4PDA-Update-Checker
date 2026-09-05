@@ -22,6 +22,7 @@ import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
+import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
@@ -33,6 +34,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var database: AppDatabase
     private var currentAmoledState: Boolean = false
     private var currentFolderName: String? = null
+    private var loadDataJob: Job? = null
 
     private var hoveredFolderPosition: Int = -1
     private var potentialMergeTargetPosition: Int = -1
@@ -47,6 +49,8 @@ class MainActivity : AppCompatActivity() {
         
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        currentFolderName = savedInstanceState?.getString("current_folder")
 
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -75,6 +79,12 @@ class MainActivity : AppCompatActivity() {
 
         val toolbar = findViewById<Toolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
+
+        if (currentFolderName != null) {
+            supportActionBar?.title = currentFolderName
+            supportActionBar?.setDisplayHomeAsUpEnabled(true)
+            supportActionBar?.setHomeAsUpIndicator(R.drawable.ic_back)
+        }
 
         val root = findViewById<View>(R.id.main_root)
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
@@ -280,7 +290,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadData() {
-        lifecycleScope.launch {
+        loadDataJob?.cancel()
+        loadDataJob = lifecycleScope.launch {
             database.trackedAppDao().getInFolder(currentFolderName).collectLatest { list ->
                 trackedAdapter.submitList(list)
             }
@@ -381,7 +392,10 @@ class MainActivity : AppCompatActivity() {
             return true
         }
         return when (item.itemId) {
-            1 -> { refreshAll(); true }
+            1 -> { 
+                refreshAll()
+                true 
+            }
             2 -> { startActivity(Intent(this, SettingsActivity::class.java)); true }
             else -> super.onOptionsItemSelected(item)
         }
@@ -513,6 +527,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshApp(app: TrackedApp) {
+        if (app.isFolder) return
         lifecycleScope.launch(Dispatchers.IO) {
             val siteVersion = UpdateChecker.parseVersionFromTopic(app.topicUrl)
             val detectedName = app.appName ?: UpdateChecker.parseAppName(app.topicUrl)
@@ -528,9 +543,37 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private suspend fun refreshAppInternal(app: TrackedApp) {
+        val appData = UpdateChecker.fetchAppData(app.topicUrl)
+        val siteVersion = appData.version
+        val detectedName = app.appName ?: appData.name
+        val detectedPackage = app.packageName ?: appData.packageName
+        val installedVersion = detectedPackage?.let { AppVersionHelper.getVersion(this@MainActivity, it) }
+        
+        database.trackedAppDao().update(app.copy(
+            appName = detectedName,
+            packageName = detectedPackage,
+            currentVersionOnSite = siteVersion,
+            installedVersion = installedVersion,
+            lastCheckTime = System.currentTimeMillis()
+        ))
+    }
+
     private fun refreshAll() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            database.trackedAppDao().getAllList().forEach { refreshApp(it) }
+        val progressBar = findViewById<LinearProgressIndicator>(R.id.updateProgress)
+        lifecycleScope.launch(Dispatchers.Main) {
+            progressBar.visibility = View.VISIBLE
+            withContext(Dispatchers.IO) {
+                val apps = database.trackedAppDao().getAllList()
+                apps.forEach { app ->
+                    if (!app.isFolder) {
+                        refreshAppInternal(app)
+                        delay(500)
+                    }
+                }
+            }
+            progressBar.visibility = View.GONE
+            Toast.makeText(this@MainActivity, "Обновление завершено", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -602,5 +645,10 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("Отмена", null)
             .show()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("current_folder", currentFolderName)
     }
 }

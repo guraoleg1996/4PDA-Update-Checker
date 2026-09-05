@@ -40,6 +40,7 @@ class TrackedAdapter(
         val btnClose: ImageButton = view.findViewById(R.id.btnClose)
         val btnGoToUpdate: Button = view.findViewById(R.id.btnGoToUpdate)
         val btnGoToPage: Button = view.findViewById(R.id.btnGoToPage)
+        val btnSpacer: View = view.findViewById(R.id.btnSpacer)
     }
 
     class FolderViewHolder(view: View) : RecyclerView.ViewHolder(view) {
@@ -133,14 +134,20 @@ class TrackedAdapter(
                 holder.textStatus.text = "✅ ДОСТУПНО ОБНОВЛЕНИЕ!"
                 holder.textStatus.setTextColor(Color.parseColor("#4CAF50"))
                 holder.btnGoToUpdate.visibility = View.VISIBLE
+                holder.btnGoToPage.visibility = View.GONE
+                holder.btnSpacer.visibility = View.GONE
             } else if (app.currentVersionOnSite != null && app.installedVersion != null) {
                 holder.textStatus.visibility = View.VISIBLE
                 holder.textStatus.text = "✓ Актуальная версия"
                 holder.textStatus.setTextColor(Color.GRAY)
                 holder.btnGoToUpdate.visibility = View.GONE
+                holder.btnGoToPage.visibility = View.VISIBLE
+                holder.btnSpacer.visibility = View.GONE
             } else {
                 holder.textStatus.visibility = View.GONE
                 holder.btnGoToUpdate.visibility = View.GONE
+                holder.btnGoToPage.visibility = View.VISIBLE
+                holder.btnSpacer.visibility = View.GONE
             }
 
             holder.itemView.setOnClickListener { onClick(app) }
