@@ -2,6 +2,9 @@ package com.example.a4pdaupdatechecker
 
 import android.content.Intent
 import android.graphics.Canvas
+import android.graphics.Color
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.LayoutInflater
@@ -11,6 +14,8 @@ import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.AutoCompleteTextView
 import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -63,10 +68,7 @@ class MainActivity : AppCompatActivity() {
                     fabAdd.setImageResource(android.R.drawable.ic_input_add)
                     fabAdd.animate().rotation(0f).start()
                 } else if (currentFolderName != null) {
-                    currentFolderName = null
-                    supportActionBar?.title = "4PDA Update Checker"
-                    supportActionBar?.setDisplayHomeAsUpEnabled(false)
-                    loadData()
+                    navigateBack()
                 } else {
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
@@ -102,6 +104,7 @@ class MainActivity : AppCompatActivity() {
         trackedAdapter = TrackedAdapter(
             onDelete = { app -> showDeleteConfirmation(app) },
             onClick = { app -> if (app.isFolder) showEditFolderDialog(app) else showEditAppDialog(app) },
+            onLongClick = { app -> if (app.isFolder) showEditFolderDialog(app) else showEditAppDialog(app) },
             onFolderClick = { folderName -> 
                 currentFolderName = folderName
                 supportActionBar?.title = folderName
@@ -212,8 +215,14 @@ class MainActivity : AppCompatActivity() {
                     
                     if (targetItem != draggedItem) {
                         if (targetItem.isFolder) {
-                            showMoveToFolderDialog(draggedItem, targetItem)
-                        } else {
+                            lifecycleScope.launch {
+                                if (draggedItem.isFolder && isDescendantOf(targetItem, draggedItem)) {
+                                    Toast.makeText(this@MainActivity, "Нельзя переместить папку саму в себя", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    showMoveToFolderDialog(draggedItem, targetItem)
+                                }
+                            }
+                        } else if (!draggedItem.isFolder) {
                             showMergeDialog(draggedItem, targetItem)
                         }
                     }
@@ -223,6 +232,10 @@ class MainActivity : AppCompatActivity() {
                 potentialMergeTargetPosition = -1
                 potentialMergeTargetItem = null
                 saveNewOrder()
+
+                // Форсируем перерисовку для устранения "глюков" наложения карточек
+                recyclerView.invalidateItemDecorations()
+                recyclerView.post { trackedAdapter.notifyDataSetChanged() }
             }
 
             override fun interpolateOutOfBoundsScroll(
@@ -289,6 +302,32 @@ class MainActivity : AppCompatActivity() {
         refreshAll()
     }
 
+    private fun navigateBack() {
+        lifecycleScope.launch {
+            val folder = currentFolderName?.let { database.trackedAppDao().getFolderByName(it) }
+            currentFolderName = folder?.folderName
+            
+            if (currentFolderName == null) {
+                supportActionBar?.title = "4PDA Update Checker"
+                supportActionBar?.setDisplayHomeAsUpEnabled(false)
+            } else {
+                supportActionBar?.title = currentFolderName
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.setHomeAsUpIndicator(R.drawable.ic_back)
+            }
+            loadData()
+        }
+    }
+
+    private suspend fun isDescendantOf(folder: TrackedApp, potentialAncestor: TrackedApp): Boolean {
+        var current: TrackedApp? = folder
+        while (current != null) {
+            if (current.appName == potentialAncestor.appName) return true
+            current = current.folderName?.let { database.trackedAppDao().getFolderByName(it) }
+        }
+        return false
+    }
+
     private fun loadData() {
         loadDataJob?.cancel()
         loadDataJob = lifecycleScope.launch {
@@ -325,14 +364,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showCreateFolderWithAppsDialog(app1: TrackedApp, app2: TrackedApp) {
-        val editText = EditText(this)
-        editText.hint = "Название папки"
-        val padding = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 20f, resources.displayMetrics).toInt()
-        val container = android.widget.FrameLayout(this)
-        val params = android.widget.FrameLayout.LayoutParams(-1, -2)
-        params.setMargins(padding, padding / 2, padding, padding / 2)
-        editText.layoutParams = params
+        val padding = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt()
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
+
+        val editText = EditText(this).apply {
+            hint = "Название папки"
+        }
+        
+        val hintText = TextView(this).apply {
+            text = "Можно вводить путь через / (например, Мои игры/Action и RPG)"
+            textSize = 11f
+            setTextColor(Color.GRAY)
+        }
+
         container.addView(editText)
+        container.addView(hintText)
 
         AlertDialog.Builder(this)
             .setTitle("Новая папка")
@@ -409,7 +458,6 @@ class MainActivity : AppCompatActivity() {
         val editFolder = view.findViewById<AutoCompleteTextView>(R.id.editFolderName)
 
         editFolder.setText(currentFolderName)
-        editFolder.isEnabled = currentFolderName == null
 
         lifecycleScope.launch {
             val folders = database.trackedAppDao().getAllFolders().first()
@@ -417,89 +465,174 @@ class MainActivity : AppCompatActivity() {
             editFolder.setAdapter(adapter)
         }
 
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Добавить ссылку на 4PDA")
             .setView(view)
-            .setPositiveButton("Добавить") { _, _ ->
-                val url = editUrl.text.toString().trim()
-                val name = editAppName.text.toString().trim().ifEmpty { null }
-                val pkg = editPackage.text.toString().trim().ifEmpty { null }
-                val folder = editFolder.text.toString().trim().ifEmpty { null }
-                if (url.isNotEmpty()) addNewApp(url, name, pkg, folder)
-            }
+            .setPositiveButton("Добавить", null)
             .setNegativeButton("Отмена", null)
-            .show()
+            .create()
+
+        dialog.show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val url = editUrl.text.toString().trim()
+            val name = editAppName.text.toString().trim().ifEmpty { null }
+            val pkg = editPackage.text.toString().trim().ifEmpty { null }
+            val folder = editFolder.text.toString().trim().ifEmpty { null }
+            
+            if (url.isEmpty()) {
+                editUrl.error = "Введите ссылку"
+                return@setOnClickListener
+            }
+            
+            if (folder != null && !isValidPath(folder, editFolder)) return@setOnClickListener
+            
+            addNewApp(url, name, pkg, folder)
+            dialog.dismiss()
+        }
     }
 
     private fun showAddFolderDialog() {
-        val editText = EditText(this)
-        editText.hint = "Название папки"
-        val padding = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 20f, resources.displayMetrics).toInt()
-        val container = android.widget.FrameLayout(this)
-        val params = android.widget.FrameLayout.LayoutParams(-1, -2)
-        params.setMargins(padding, padding / 2, padding, padding / 2)
-        editText.layoutParams = params
-        container.addView(editText)
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_add_folder, null)
+        val editName = view.findViewById<EditText>(R.id.editFolderName)
+        val editParent = view.findViewById<AutoCompleteTextView>(R.id.editParentFolder)
 
-        AlertDialog.Builder(this)
+        editParent.setText(currentFolderName)
+
+        lifecycleScope.launch {
+            val folders = database.trackedAppDao().getAllFolders().first()
+            val adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_dropdown_item_1line, folders)
+            editParent.setAdapter(adapter)
+        }
+
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Создать папку")
-            .setView(container)
-            .setPositiveButton("Создать") { _, _ ->
-                val name = editText.text.toString().trim()
-                if (name.isNotEmpty()) addNewFolder(name)
-            }
+            .setView(view)
+            .setPositiveButton("Создать", null)
             .setNegativeButton("Отмена", null)
-            .show()
+            .create()
+
+        dialog.show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val name = editName.text.toString().trim()
+            val parent = editParent.text.toString().trim().ifEmpty { null }
+            
+            if (name.isEmpty()) {
+                editName.error = "Введите название"
+                return@setOnClickListener
+            }
+            
+            if (!isValidPath(name, editName)) return@setOnClickListener
+            if (parent != null && !isValidPath(parent, editParent)) return@setOnClickListener
+            
+            addNewFolder(name, parent)
+            dialog.dismiss()
+        }
     }
 
-    private fun addNewFolder(name: String) {
+    private fun addNewFolder(path: String, startParent: String? = currentFolderName) {
         lifecycleScope.launch(Dispatchers.IO) {
-            val maxOrder = database.trackedAppDao().getMaxSortOrder(currentFolderName) ?: -1
-            val newFolder = TrackedApp(
-                topicUrl = "folder_$name",
-                appName = name,
-                isFolder = true,
-                folderName = currentFolderName,
-                sortOrder = maxOrder + 1
-            )
-            database.trackedAppDao().insert(newFolder)
+            val parts = path.split("/").filter { it.isNotEmpty() }
+            var currentParent: String? = startParent
+            
+            for (part in parts) {
+                val existing = database.trackedAppDao().getFolderByNameAndParent(part, currentParent)
+                if (existing == null) {
+                    val maxOrder = database.trackedAppDao().getMaxSortOrder(currentParent) ?: -1
+                    val newFolder = TrackedApp(
+                        topicUrl = "folder_${currentParent ?: "root"}_$part",
+                        appName = part,
+                        isFolder = true,
+                        folderName = currentParent,
+                        sortOrder = maxOrder + 1
+                    )
+                    database.trackedAppDao().insert(newFolder)
+                }
+                currentParent = part
+            }
         }
     }
 
     private fun showEditFolderDialog(app: TrackedApp) {
-        val editText = EditText(this)
-        editText.setText(app.appName)
-        val padding = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 20f, resources.displayMetrics).toInt()
-        val container = android.widget.FrameLayout(this)
-        val params = android.widget.FrameLayout.LayoutParams(-1, -2)
-        params.setMargins(padding, padding / 2, padding, padding / 2)
-        editText.layoutParams = params
-        container.addView(editText)
+        val padding = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt()
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, padding)
+        }
 
-        AlertDialog.Builder(this)
+        val editText = EditText(this).apply {
+            setText(app.appName)
+        }
+        
+        val hintText = TextView(this).apply {
+            text = "Можно вводить путь через / (например, Мои игры/Action и RPG)"
+            textSize = 11f
+            setTextColor(Color.GRAY)
+        }
+
+        container.addView(editText)
+        container.addView(hintText)
+
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Редактировать папку")
             .setView(container)
-            .setPositiveButton("Сохранить") { _, _ ->
-                val newName = editText.text.toString().trim()
-                if (newName.isNotEmpty() && newName != app.appName) {
-                    lifecycleScope.launch(Dispatchers.IO) {
-                        database.trackedAppDao().update(app.copy(appName = newName))
-                        val children = database.trackedAppDao().getInFolderList(app.appName)
-                        database.trackedAppDao().updateAll(children.map { it.copy(folderName = newName) })
-                    }
+            .setPositiveButton("Сохранить", null)
+            .setNegativeButton("Отмена", null)
+            .create()
+
+        dialog.show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val newName = editText.text.toString().trim()
+            if (newName.isEmpty()) {
+                editText.error = "Название не может быть пустым"
+                return@setOnClickListener
+            }
+            if (newName.contains("/")) {
+                editText.error = "Название не должно содержать /"
+                return@setOnClickListener
+            }
+            if (newName != app.appName) {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    database.trackedAppDao().update(app.copy(appName = newName))
+                    val children = database.trackedAppDao().getInFolderList(app.appName)
+                    database.trackedAppDao().updateAll(children.map { it.copy(folderName = newName) })
                 }
             }
-            .setNegativeButton("Отмена", null)
-            .show()
+            dialog.dismiss()
+        }
     }
 
-    private fun addNewApp(topicUrl: String, manualName: String?, manualPackageName: String?, folder: String?) {
+    private fun addNewApp(topicUrl: String, manualName: String?, manualPackageName: String?, folderPath: String?) {
         lifecycleScope.launch(Dispatchers.IO) {
-            val detectedName = manualName ?: UpdateChecker.parseAppName(topicUrl)
-            val siteVersion = UpdateChecker.parseVersionFromTopic(topicUrl)
-            val detectedPackage = manualPackageName ?: UpdateChecker.parsePackageName(topicUrl)
+            var lastFolder: String? = null
+            
+            if (folderPath != null) {
+                val parts = folderPath.split("/").filter { it.isNotEmpty() }
+                var currentParent: String? = null
+                
+                for (part in parts) {
+                    val existing = database.trackedAppDao().getFolderByNameAndParent(part, currentParent)
+                    if (existing == null) {
+                        val maxOrder = database.trackedAppDao().getMaxSortOrder(currentParent) ?: -1
+                        val newFolder = TrackedApp(
+                            topicUrl = "folder_${currentParent ?: "root"}_$part",
+                            appName = part,
+                            isFolder = true,
+                            folderName = currentParent,
+                            sortOrder = maxOrder + 1
+                        )
+                        database.trackedAppDao().insert(newFolder)
+                    }
+                    currentParent = part
+                    lastFolder = part
+                }
+            }
+
+            val appData = UpdateChecker.fetchAppData(topicUrl)
+            val detectedName = manualName ?: appData.name
+            val siteVersion = appData.version
+            val detectedPackage = manualPackageName ?: appData.packageName
             val installedVersion = detectedPackage?.let { AppVersionHelper.getVersion(this@MainActivity, it) }
-            val maxOrder = database.trackedAppDao().getMaxSortOrder(folder) ?: -1
+            val maxOrder = database.trackedAppDao().getMaxSortOrder(lastFolder) ?: -1
             
             val newApp = TrackedApp(
                 topicUrl = topicUrl,
@@ -509,7 +642,7 @@ class MainActivity : AppCompatActivity() {
                 installedVersion = installedVersion,
                 lastCheckTime = System.currentTimeMillis(),
                 sortOrder = maxOrder + 1,
-                folderName = folder,
+                folderName = lastFolder,
                 isFolder = false
             )
             database.trackedAppDao().insert(newApp)
@@ -543,37 +676,75 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun refreshAppInternal(app: TrackedApp) {
+    private fun isNetworkAvailable(): Boolean {
+        val connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    private suspend fun refreshAppInternal(app: TrackedApp): Boolean {
         val appData = UpdateChecker.fetchAppData(app.topicUrl)
-        val siteVersion = appData.version
-        val detectedName = app.appName ?: appData.name
-        val detectedPackage = app.packageName ?: appData.packageName
-        val installedVersion = detectedPackage?.let { AppVersionHelper.getVersion(this@MainActivity, it) }
         
-        database.trackedAppDao().update(app.copy(
-            appName = detectedName,
-            packageName = detectedPackage,
-            currentVersionOnSite = siteVersion,
-            installedVersion = installedVersion,
-            lastCheckTime = System.currentTimeMillis()
-        ))
+        val updatedApp = if (appData.isError) {
+            app.copy(lastUpdateError = true)
+        } else {
+            val siteVersion = appData.version
+            val detectedName = app.appName ?: appData.name
+            val detectedPackage = app.packageName ?: appData.packageName
+            val installedVersion = detectedPackage?.let { AppVersionHelper.getVersion(this@MainActivity, it) }
+            
+            app.copy(
+                appName = detectedName,
+                packageName = detectedPackage,
+                currentVersionOnSite = siteVersion,
+                installedVersion = installedVersion,
+                lastCheckTime = System.currentTimeMillis(),
+                lastUpdateError = false
+            )
+        }
+        
+        database.trackedAppDao().update(updatedApp)
+        return !appData.isError
     }
 
     private fun refreshAll() {
         val progressBar = findViewById<LinearProgressIndicator>(R.id.updateProgress)
         lifecycleScope.launch(Dispatchers.Main) {
+            if (!isNetworkAvailable()) {
+                Toast.makeText(this@MainActivity, "Отсутствует подключение к интернету", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+
             progressBar.visibility = View.VISIBLE
+            var successCount = 0
+            var errorCount = 0
+            var connectionIssue = false
+
             withContext(Dispatchers.IO) {
                 val apps = database.trackedAppDao().getAllList()
-                apps.forEach { app ->
-                    if (!app.isFolder) {
-                        refreshAppInternal(app)
-                        delay(500)
+                for (app in apps) {
+                    if (app.isFolder) continue
+                    
+                    if (!isNetworkAvailable()) {
+                        connectionIssue = true
+                        break
                     }
+
+                    val success = refreshAppInternal(app)
+                    if (success) successCount++ else errorCount++
+                    delay(500)
                 }
             }
+
             progressBar.visibility = View.GONE
-            Toast.makeText(this@MainActivity, "Обновление завершено", Toast.LENGTH_SHORT).show()
+            
+            val message = when {
+                connectionIssue -> "Проблема с интернетом"
+                errorCount > 0 -> "Проблема с обновлением, ошибок: $errorCount"
+                else -> "Обновление завершено"
+            }
+            Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -588,17 +759,37 @@ class MainActivity : AppCompatActivity() {
 
     private fun deleteApp(app: TrackedApp) {
         lifecycleScope.launch(Dispatchers.IO) {
-            database.trackedAppDao().delete(app)
-            if (app.isFolder) {
-                val children = database.trackedAppDao().getInFolderList(app.appName)
-                database.trackedAppDao().updateAll(children.map { it.copy(folderName = null) })
+            val toDelete = if (app.isFolder) {
+                listOf(app) + getAllChildrenRec(app.appName)
+            } else {
+                listOf(app)
             }
+            
+            database.trackedAppDao().deleteAll(toDelete)
+            
             withContext(Dispatchers.Main) {
                 Snackbar.make(findViewById(R.id.main_root), "Удалено: ${app.appName ?: app.topicUrl}", Snackbar.LENGTH_LONG)
-                    .setAction("ОТМЕНИТЬ") { lifecycleScope.launch(Dispatchers.IO) { database.trackedAppDao().insert(app) } }
+                    .setAction("ОТМЕНИТЬ") { 
+                        lifecycleScope.launch(Dispatchers.IO) { 
+                            database.trackedAppDao().insertAll(toDelete) 
+                        } 
+                    }
                     .show()
             }
         }
+    }
+
+    private suspend fun getAllChildrenRec(parentName: String?): List<TrackedApp> {
+        if (parentName == null) return emptyList()
+        val children = database.trackedAppDao().getInFolderList(parentName)
+        val result = mutableListOf<TrackedApp>()
+        for (child in children) {
+            result.add(child)
+            if (child.isFolder) {
+                result.addAll(getAllChildrenRec(child.appName))
+            }
+        }
+        return result
     }
 
     private fun showEditAppDialog(app: TrackedApp) {
@@ -619,32 +810,54 @@ class MainActivity : AppCompatActivity() {
             editFolder.setAdapter(adapter)
         }
 
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Редактировать")
             .setView(view)
-            .setPositiveButton("Сохранить") { _, _ ->
-                val newUrl = editUrl.text.toString().trim()
-                val newName = editAppName.text.toString().trim().ifEmpty { null }
-                val newPkg = editPackage.text.toString().trim().ifEmpty { null }
-                val newFolder = editFolder.text.toString().trim().ifEmpty { null }
-                
-                if (newUrl.isEmpty()) return@setPositiveButton
+            .setPositiveButton("Сохранить", null)
+            .setNegativeButton("Отмена", null)
+            .create()
 
-                lifecycleScope.launch(Dispatchers.IO) {
-                    if (newUrl != app.topicUrl) {
-                        database.trackedAppDao().delete(app)
-                        val newApp = app.copy(topicUrl = newUrl, appName = newName, packageName = newPkg, folderName = newFolder, isFolder = false)
-                        database.trackedAppDao().insert(newApp)
-                        refreshApp(newApp)
-                    } else {
-                        val updatedApp = app.copy(appName = newName, packageName = newPkg, folderName = newFolder)
-                        database.trackedAppDao().update(updatedApp)
-                        refreshApp(updatedApp)
-                    }
+        dialog.show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val newUrl = editUrl.text.toString().trim()
+            val newName = editAppName.text.toString().trim().ifEmpty { null }
+            val newPkg = editPackage.text.toString().trim().ifEmpty { null }
+            val newFolder = editFolder.text.toString().trim().ifEmpty { null }
+            
+            if (newUrl.isEmpty()) {
+                editUrl.error = "Введите ссылку"
+                return@setOnClickListener
+            }
+            
+            if (newFolder != null && !isValidPath(newFolder, editFolder)) return@setOnClickListener
+
+            lifecycleScope.launch(Dispatchers.IO) {
+                if (newUrl != app.topicUrl) {
+                    database.trackedAppDao().delete(app)
+                    val newApp = app.copy(topicUrl = newUrl, appName = newName, packageName = newPkg, folderName = newFolder, isFolder = false)
+                    database.trackedAppDao().insert(newApp)
+                    refreshApp(newApp)
+                } else {
+                    val updatedApp = app.copy(appName = newName, packageName = newPkg, folderName = newFolder)
+                    database.trackedAppDao().update(updatedApp)
+                    refreshApp(updatedApp)
                 }
             }
-            .setNegativeButton("Отмена", null)
-            .show()
+            dialog.dismiss()
+        }
+    }
+
+    private fun isValidPath(path: String, editText: EditText): Boolean {
+        if (path.startsWith("/") || path.endsWith("/") || path.contains("//")) {
+            editText.error = "Некорректный путь: проверьте слэши"
+            return false
+        }
+        val parts = path.split("/")
+        if (parts.any { it.trim().isEmpty() }) {
+            editText.error = "Путь содержит пустые сегменты"
+            return false
+        }
+        return true
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

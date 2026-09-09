@@ -20,8 +20,14 @@ interface TrackedAppDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(app: TrackedApp)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(apps: List<TrackedApp>)
+
     @Delete
     suspend fun delete(app: TrackedApp)
+
+    @Delete
+    suspend fun deleteAll(apps: List<TrackedApp>)
 
     @Update
     suspend fun update(app: TrackedApp)
@@ -32,9 +38,15 @@ interface TrackedAppDao {
     @Query("SELECT * FROM tracked_apps WHERE topicUrl = :url")
     suspend fun getByUrl(url: String): TrackedApp?
 
+    @Query("SELECT * FROM tracked_apps WHERE appName = :name AND folderName IS :parent AND isFolder = 1 LIMIT 1")
+    suspend fun getFolderByNameAndParent(name: String, parent: String?): TrackedApp?
+
     @Query("SELECT MAX(sortOrder) FROM tracked_apps WHERE folderName IS :folder")
     suspend fun getMaxSortOrder(folder: String?): Int?
 
     @Query("SELECT DISTINCT appName FROM tracked_apps WHERE isFolder = 1")
     fun getAllFolders(): Flow<List<String>>
+
+    @Query("SELECT * FROM tracked_apps WHERE appName = :name AND isFolder = 1 LIMIT 1")
+    suspend fun getFolderByName(name: String): TrackedApp?
 }

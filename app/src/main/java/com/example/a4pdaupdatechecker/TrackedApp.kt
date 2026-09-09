@@ -13,5 +13,6 @@ data class TrackedApp(
     val lastCheckTime: Long = 0,
     val sortOrder: Int = 0,
     val folderName: String? = null,
-    val isFolder: Boolean = false
+    val isFolder: Boolean = false,
+    val lastUpdateError: Boolean = false
 )

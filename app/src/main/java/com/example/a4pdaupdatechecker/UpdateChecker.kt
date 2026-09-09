@@ -6,7 +6,8 @@ import org.jsoup.nodes.Document
 data class AppData(
     val version: String?,
     val name: String?,
-    val packageName: String?
+    val packageName: String?,
+    val isError: Boolean = false
 )
 
 object UpdateChecker {
@@ -26,11 +27,12 @@ object UpdateChecker {
             AppData(
                 version = parseVersion(doc),
                 name = parseAppNameFromDoc(doc),
-                packageName = parsePackageNameFromDoc(doc)
+                packageName = parsePackageNameFromDoc(doc),
+                isError = false
             )
         } catch (e: Exception) {
             e.printStackTrace()
-            AppData(null, null, null)
+            AppData(null, null, null, isError = true)
         }
     }
 

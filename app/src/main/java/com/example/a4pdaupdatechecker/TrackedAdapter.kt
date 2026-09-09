@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.RecyclerView
 class TrackedAdapter(
     private val onDelete: (TrackedApp) -> Unit,
     private val onClick: (TrackedApp) -> Unit,
+    private val onLongClick: (TrackedApp) -> Unit,
     private val onFolderClick: (String) -> Unit
 ) : ListAdapter<TrackedApp, RecyclerView.ViewHolder>(DiffCallback()) {
 
@@ -112,9 +113,18 @@ class TrackedAdapter(
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
         val app = getItem(position)
+        // Сбрасываем возможные изменения от ItemTouchHelper при переиспользовании
+        holder.itemView.alpha = 1.0f
+        holder.itemView.scaleX = 1.0f
+        holder.itemView.scaleY = 1.0f
+        
         if (holder is FolderViewHolder) {
             holder.textFolderName.text = app.appName
             holder.itemView.setOnClickListener { onFolderClick(app.appName!!) }
+            holder.itemView.setOnLongClickListener {
+                onLongClick(app)
+                true
+            }
             holder.btnDelete.setOnClickListener { onDelete(app) }
         } else if (holder is ViewHolder) {
             holder.textAppName.text = app.appName ?: "Без названия"
@@ -129,7 +139,14 @@ class TrackedAdapter(
                                  app.installedVersion != null && 
                                  UpdateChecker.isUpdateAvailable(app.currentVersionOnSite, app.installedVersion)
 
-            if (updateAvailable) {
+            if (app.lastUpdateError) {
+                holder.textStatus.visibility = View.VISIBLE
+                holder.textStatus.text = "⚠️ Ошибка обновления"
+                holder.textStatus.setTextColor(Color.RED)
+                holder.btnGoToUpdate.visibility = View.GONE
+                holder.btnGoToPage.visibility = View.VISIBLE
+                holder.btnSpacer.visibility = View.GONE
+            } else if (updateAvailable) {
                 holder.textStatus.visibility = View.VISIBLE
                 holder.textStatus.text = "✅ ДОСТУПНО ОБНОВЛЕНИЕ!"
                 holder.textStatus.setTextColor(Color.parseColor("#4CAF50"))

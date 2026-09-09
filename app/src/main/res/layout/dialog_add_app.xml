@@ -23,6 +23,14 @@
         android:inputType="textCapWords"
         android:autofillHints="name" />
 
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Название подтянется автоматически, если оставить пустым"
+        android:textSize="11sp"
+        android:textColor="#888888"
+        android:layout_marginStart="4dp" />
+
     <EditText
         android:id="@+id/editPackageName"
         android:layout_width="match_parent"
@@ -32,18 +40,26 @@
         android:inputType="text"
         android:autofillHints="packageName" />
 
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Имя пакета подтянется автоматически, но это не всегда работает"
+        android:textSize="11sp"
+        android:textColor="#888888"
+        android:layout_marginStart="4dp" />
+
     <com.google.android.material.textfield.TextInputLayout
         style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="12dp"
         android:hint="Папка">
 
         <AutoCompleteTextView
             android:id="@+id/editFolderName"
             android:layout_width="match_parent"
-            android:layout_height="40dp"
-            android:padding="0dp"
+            android:layout_height="wrap_content"
+            android:padding="12dp"
             android:textSize="14sp"
             android:inputType="text" />
 
@@ -53,7 +69,9 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
-        android:text="Название подтянеться автоматически, если оставить пустыми. \nИмя пакета тоже может подтянуться автоматически но это не всегда работает."
-        android:textSize="12sp" />
+        android:text="Можно вводить путь через / (например, Мои приложения/Социальные сети)"
+        android:textSize="11sp"
+        android:textColor="#888888"
+        android:layout_marginStart="4dp" />
 
 </LinearLayout>
