@@ -1,7 +1,13 @@
 package com.example.a4pdaupdatechecker
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.View
@@ -9,13 +15,18 @@ import android.widget.ArrayAdapter
 import android.widget.AutoCompleteTextView
 import android.widget.Button
 import android.widget.Filter
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
+import com.google.android.material.color.MaterialColors
 import com.google.android.material.materialswitch.MaterialSwitch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -62,6 +73,38 @@ class SettingsActivity : AppCompatActivity() {
         setupThemeSelector()
         setupAmoledSwitch()
         setupBackupButtons()
+        setupLogSizeSelector()
+        setupLogButton()
+    }
+
+    companion object {
+        private val logSizeKbValues = intArrayOf(
+            50,        // 50 КБ
+            100,       // 100 КБ
+            250,       // 250 КБ
+            500,       // 500 КБ
+            1000,      // 1 МБ
+            5000,      // 5 МБ
+            10000,     // 10 МБ
+            50000,     // 50 МБ
+            100000,    // 100 МБ
+            500000,    // 500 МБ
+            1000000    // 1 ГБ
+        )
+
+        private val logSizeLabels = arrayOf(
+            "50 КБ (~100 записей)",
+            "100 КБ (~200 записей, по умолчанию)",
+            "250 КБ (~500 записей)",
+            "500 КБ (~1000 записей)",
+            "1 МБ (~2 тыс. записей)",
+            "5 МБ (~10 тыс. записей)",
+            "10 МБ (~20 тыс. записей)",
+            "50 МБ (~100 тыс. записей)",
+            "100 МБ (~200 тыс. записей)",
+            "500 МБ (~1 млн записей)",
+            "1 ГБ (~2 млн записей)"
+        )
     }
 
     private fun setupThemeSelector() {
@@ -76,6 +119,23 @@ class SettingsActivity : AppCompatActivity() {
 
         selector.setOnItemClickListener { _, _, position, _ ->
             ThemeHelper.setSelectedTheme(this, position)
+        }
+    }
+
+    private fun setupLogSizeSelector() {
+        val adapter = NoFilterAdapter(this, R.layout.list_item_dropdown, logSizeLabels)
+        val selector = findViewById<AutoCompleteTextView>(R.id.logSizeSelector)
+        
+        selector.setAdapter(adapter)
+        
+        val currentLimitKb = AppLog.getLimitKb()
+        val currentIndex = logSizeKbValues.indexOf(currentLimitKb).let { if (it >= 0) it else 1 }
+        selector.setText(logSizeLabels[currentIndex], false)
+
+        selector.setOnItemClickListener { _, _, position, _ ->
+            if (position in logSizeKbValues.indices) {
+                AppLog.setLimitKb(this, logSizeKbValues[position])
+            }
         }
     }
 
@@ -96,6 +156,79 @@ class SettingsActivity : AppCompatActivity() {
         }
         findViewById<Button>(R.id.btnImport).setOnClickListener {
             openDocumentLauncher.launch(arrayOf("application/json", "application/octet-stream", "*/*"))
+        }
+    }
+
+    private fun setupLogButton() {
+        findViewById<Button>(R.id.btnLogs).setOnClickListener { showLogsDialog() }
+    }
+
+    private fun showLogsDialog() {
+        val padding = (16 * resources.displayMetrics.density).toInt()
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, 0)
+        }
+
+        val infoTextView = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.GRAY)
+            setPadding(0, 0, 0, (8 * resources.displayMetrics.density).toInt())
+        }
+
+        val logTextView = TextView(this).apply {
+            setTextIsSelectable(true)
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setTextColor(MaterialColors.getColor(this@SettingsActivity, com.google.android.material.R.attr.colorOnSurface, Color.GRAY))
+        }
+
+        val scroll = ScrollView(this).apply { addView(logTextView) }
+
+        layout.addView(infoTextView)
+        layout.addView(scroll)
+
+        fun refresh() {
+            infoTextView.text = "Размер файла: ${AppLog.getLogSizeInfo()}"
+            val text = AppLog.getText()
+            logTextView.text = if (text.isBlank()) {
+                "Журнал пуст. Обновите список на главном экране, и записи появятся здесь."
+            } else {
+                text
+            }
+            scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+        }
+        refresh()
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Журнал работы сети")
+            .setView(layout)
+            .setPositiveButton("Поделиться", null)
+            .setNeutralButton("Копировать", null)
+            .setNegativeButton("Очистить", null)
+            .create()
+        dialog.show()
+
+        // Кнопки переопределены, чтобы окно не закрывалось после нажатия.
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "Журнал 4PDA Update Checker")
+                putExtra(Intent.EXTRA_TEXT, AppLog.buildReport(this@SettingsActivity))
+            }
+            startActivity(Intent.createChooser(send, "Отправить журнал"))
+        }
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("Журнал 4PDA Update Checker", AppLog.buildReport(this)))
+            // На Android 13+ система сама показывает подтверждение.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                Toast.makeText(this, "Скопировано", Toast.LENGTH_SHORT).show()
+            }
+        }
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+            AppLog.clear()
+            refresh()
         }
     }
 

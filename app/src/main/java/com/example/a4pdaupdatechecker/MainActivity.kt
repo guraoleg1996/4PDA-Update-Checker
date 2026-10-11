@@ -662,17 +662,7 @@ class MainActivity : AppCompatActivity() {
     private fun refreshApp(app: TrackedApp) {
         if (app.isFolder) return
         lifecycleScope.launch(Dispatchers.IO) {
-            val siteVersion = UpdateChecker.parseVersionFromTopic(app.topicUrl)
-            val detectedName = app.appName ?: UpdateChecker.parseAppName(app.topicUrl)
-            val detectedPackage = app.packageName ?: UpdateChecker.parsePackageName(app.topicUrl)
-            val installedVersion = detectedPackage?.let { AppVersionHelper.getVersion(this@MainActivity, it) }
-            database.trackedAppDao().update(app.copy(
-                appName = detectedName,
-                packageName = detectedPackage,
-                currentVersionOnSite = siteVersion,
-                installedVersion = installedVersion,
-                lastCheckTime = System.currentTimeMillis()
-            ))
+            refreshAppInternal(app)
         }
     }
 
@@ -684,28 +674,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     private suspend fun refreshAppInternal(app: TrackedApp): Boolean {
-        val appData = UpdateChecker.fetchAppData(app.topicUrl)
-        
-        val updatedApp = if (appData.isError) {
-            app.copy(lastUpdateError = true)
-        } else {
-            val siteVersion = appData.version
-            val detectedName = app.appName ?: appData.name
-            val detectedPackage = app.packageName ?: appData.packageName
-            val installedVersion = detectedPackage?.let { AppVersionHelper.getVersion(this@MainActivity, it) }
+        return try {
+            val appData = UpdateChecker.fetchAppData(app.topicUrl)
             
-            app.copy(
-                appName = detectedName,
-                packageName = detectedPackage,
-                currentVersionOnSite = siteVersion,
-                installedVersion = installedVersion,
-                lastCheckTime = System.currentTimeMillis(),
-                lastUpdateError = false
-            )
+            val updatedApp = if (appData.isError) {
+                app.copy(lastUpdateError = true)
+            } else {
+                val siteVersion = appData.version
+                val detectedName = app.appName ?: appData.name
+                val detectedPackage = app.packageName ?: appData.packageName
+                val installedVersion = detectedPackage?.let { AppVersionHelper.getVersion(this@MainActivity, it) }
+                
+                app.copy(
+                    appName = detectedName,
+                    packageName = detectedPackage,
+                    currentVersionOnSite = siteVersion,
+                    installedVersion = installedVersion,
+                    lastCheckTime = System.currentTimeMillis(),
+                    lastUpdateError = false
+                )
+            }
+            
+            database.trackedAppDao().update(updatedApp)
+            !appData.isError
+        } catch (e: Exception) {
+            AppLog.e("MainActivity", "Ошибка при обновлении элемента ${app.appName ?: app.topicUrl}", e)
+            val updatedApp = app.copy(lastUpdateError = true)
+            database.trackedAppDao().update(updatedApp)
+            false
         }
-        
-        database.trackedAppDao().update(updatedApp)
-        return !appData.isError
     }
 
     private fun refreshAll() {
@@ -719,17 +716,11 @@ class MainActivity : AppCompatActivity() {
             progressBar.visibility = View.VISIBLE
             var successCount = 0
             var errorCount = 0
-            var connectionIssue = false
 
             withContext(Dispatchers.IO) {
                 val apps = database.trackedAppDao().getAllList()
                 for (app in apps) {
                     if (app.isFolder) continue
-                    
-                    if (!isNetworkAvailable()) {
-                        connectionIssue = true
-                        break
-                    }
 
                     val success = refreshAppInternal(app)
                     if (success) successCount++ else errorCount++
@@ -739,10 +730,10 @@ class MainActivity : AppCompatActivity() {
 
             progressBar.visibility = View.GONE
             
-            val message = when {
-                connectionIssue -> "Проблема с интернетом"
-                errorCount > 0 -> "Проблема с обновлением, ошибок: $errorCount"
-                else -> "Обновление завершено"
+            val message = if (errorCount > 0) {
+                "Обновление завершено. Успешно: $successCount, с ошибкой: $errorCount"
+            } else {
+                "Обновление завершено ($successCount)"
             }
             Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
         }

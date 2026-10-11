@@ -21,89 +21,137 @@
         android:layout_height="1dp"
         android:background="@color/divider_color" />
 
-    <LinearLayout
+    <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:orientation="vertical"
-        android:padding="16dp"
-        android:focusable="true"
-        android:focusableInTouchMode="true">
+        android:fillViewport="true">
 
-        <TextView
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Тема оформления"
-            android:textSize="16sp"
-            android:textStyle="bold" />
+            android:orientation="vertical"
+            android:padding="16dp"
+            android:focusable="true"
+            android:focusableInTouchMode="true">
 
-        <com.google.android.material.textfield.TextInputLayout
-            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="Выберите тему">
-
-            <AutoCompleteTextView
-                android:id="@+id/themeSelector"
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="none"
-                android:focusable="false"
-                android:clickable="true" />
+                android:text="Тема оформления"
+                android:textSize="16sp"
+                android:textStyle="bold" />
 
-        </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="Выберите тему">
 
-        <com.google.android.material.materialswitch.MaterialSwitch
-            android:id="@+id/switchAmoled"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:text="AMOLED чёрный" />
+                <AutoCompleteTextView
+                    android:id="@+id/themeSelector"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="none"
+                    android:focusable="false"
+                    android:clickable="true" />
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="Использовать чисто чёрный фон в тёмных темах (экономит заряд на OLED-экранах)"
-            android:textSize="12sp"
-            android:textColor="#888888" />
+            </com.google.android.material.textfield.TextInputLayout>
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="32dp"
-            android:text="Резервное копирование"
-            android:textSize="16sp"
-            android:textStyle="bold" />
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/switchAmoled"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="AMOLED чёрный" />
 
-        <Button
-            android:id="@+id/btnExport"
-            style="@style/Widget.Material3.Button.TonalButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Экспортировать список в файл"
-            app:icon="@android:drawable/ic_menu_save" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Использовать чисто чёрный фон в тёмных темах (экономит заряд на OLED-экранах)"
+                android:textSize="12sp"
+                android:textColor="#888888" />
 
-        <Button
-            android:id="@+id/btnImport"
-            style="@style/Widget.Material3.Button.TonalButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Импортировать список из файла"
-            app:icon="@android:drawable/ic_menu_revert" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="32dp"
+                android:text="Резервное копирование"
+                android:textSize="16sp"
+                android:textStyle="bold" />
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="Позволяет сохранить ваши ссылки в файл и восстановить их позже или на другом устройстве."
-            android:textSize="12sp"
-            android:textColor="#888888" />
+            <Button
+                android:id="@+id/btnExport"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Экспортировать список в файл"
+                app:icon="@android:drawable/ic_menu_save" />
 
-    </LinearLayout>
+            <Button
+                android:id="@+id/btnImport"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Импортировать список из файла"
+                app:icon="@android:drawable/ic_menu_revert" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Позволяет сохранить ваши ссылки в файл и восстановить их позже или на другом устройстве."
+                android:textSize="12sp"
+                android:textColor="#888888" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="32dp"
+                android:text="Диагностика"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <com.google.android.material.textfield.TextInputLayout
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="Максимальный размер журнала">
+
+                <AutoCompleteTextView
+                    android:id="@+id/logSizeSelector"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="none"
+                    android:focusable="false"
+                    android:clickable="true" />
+
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <Button
+                android:id="@+id/btnLogs"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Открыть журнал работы сети"
+                app:icon="@android:drawable/ic_menu_info_details" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Если обновление выдаёт ошибку, здесь видна причина. При превышении размера старые записи автоматически очищаются."
+                android:textSize="12sp"
+                android:textColor="#888888" />
+
+        </LinearLayout>
+    </ScrollView>
 
     <View
         android:id="@+id/bottomDivider"
