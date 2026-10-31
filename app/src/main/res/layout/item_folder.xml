@@ -34,10 +34,21 @@
             tools:text="Folder Name" />
 
         <ImageButton
+            android:id="@+id/btnEditFolder"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_marginEnd="8dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Редактировать папку"
+            android:src="@android:drawable/ic_menu_edit"
+            app:tint="@android:color/darker_gray" />
+
+        <ImageButton
             android:id="@+id/btnDeleteFolder"
             android:layout_width="32dp"
             android:layout_height="32dp"
             android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Удалить папку"
             android:src="@android:drawable/ic_menu_close_clear_cancel"
             app:tint="@android:color/darker_gray" />
 

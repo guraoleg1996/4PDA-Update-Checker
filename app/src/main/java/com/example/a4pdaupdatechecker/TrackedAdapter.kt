@@ -4,6 +4,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
+import android.util.TypedValue
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -13,6 +14,8 @@ import android.widget.TextView
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.color.MaterialColors
 
 class TrackedAdapter(
     private val onDelete: (TrackedApp) -> Unit,
@@ -22,8 +25,45 @@ class TrackedAdapter(
 ) : ListAdapter<TrackedApp, RecyclerView.ViewHolder>(DiffCallback()) {
 
     companion object {
-        private const val TYPE_APP = 0
-        private const val TYPE_FOLDER = 1
+        const val TYPE_APP = 0
+        const val TYPE_FOLDER = 1
+    }
+
+    private var items: MutableList<TrackedApp> = mutableListOf()
+
+    override fun submitList(list: List<TrackedApp>?) {
+        items = list?.toMutableList() ?: mutableListOf()
+        super.submitList(list)
+    }
+
+    override fun submitList(list: List<TrackedApp>?, commitCallback: Runnable?) {
+        items = list?.toMutableList() ?: mutableListOf()
+        super.submitList(list, commitCallback)
+    }
+
+    public override fun getItem(position: Int): TrackedApp {
+        return items.getOrElse(position) { super.getItem(position) }
+    }
+
+    override fun getItemCount(): Int {
+        return items.size
+    }
+
+    val currentItems: List<TrackedApp>
+        get() = items
+
+    fun moveItem(fromPosition: Int, toPosition: Int) {
+        if (fromPosition !in items.indices || toPosition !in items.indices) return
+        val item = items.removeAt(fromPosition)
+        items.add(toPosition, item)
+        notifyItemMoved(fromPosition, toPosition)
+    }
+
+    fun removeItem(position: Int) {
+        if (position in items.indices) {
+            items.removeAt(position)
+            notifyItemRemoved(position)
+        }
     }
 
     override fun getItemViewType(position: Int): Int {
@@ -38,6 +78,7 @@ class TrackedAdapter(
         val textInstalledVersion: TextView = view.findViewById(R.id.textInstalledVersion)
         val textStatus: TextView = view.findViewById(R.id.textStatus)
         val textFolder: TextView = view.findViewById(R.id.textFolder)
+        val btnEdit: ImageButton = view.findViewById(R.id.btnEditApp)
         val btnClose: ImageButton = view.findViewById(R.id.btnClose)
         val btnGoToUpdate: Button = view.findViewById(R.id.btnGoToUpdate)
         val btnGoToPage: Button = view.findViewById(R.id.btnGoToPage)
@@ -45,8 +86,43 @@ class TrackedAdapter(
     }
 
     class FolderViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val cardView: MaterialCardView = view as MaterialCardView
         val textFolderName: TextView = view.findViewById(R.id.textFolderName)
+        val btnEdit: ImageButton = view.findViewById(R.id.btnEditFolder)
         val btnDelete: ImageButton = view.findViewById(R.id.btnDeleteFolder)
+
+        private var isCurrentlyHovered: Boolean = false
+
+        fun setHovered(isHovered: Boolean) {
+            if (isCurrentlyHovered == isHovered) return
+            isCurrentlyHovered = isHovered
+
+            val context = itemView.context
+            if (isHovered) {
+                val primaryColor = MaterialColors.getColor(
+                    cardView,
+                    androidx.appcompat.R.attr.colorPrimary,
+                    Color.parseColor("#2196F3")
+                )
+                cardView.strokeWidth = (3 * context.resources.displayMetrics.density).toInt()
+                cardView.strokeColor = primaryColor
+                cardView.animate().scaleX(1.05f).scaleY(1.05f).setDuration(150).start()
+                cardView.cardElevation = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 2f, context.resources.displayMetrics)
+            } else {
+                cardView.animate().scaleX(1.0f).scaleY(1.0f).setDuration(150).start()
+                cardView.strokeWidth = 0
+                cardView.cardElevation = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 2f, context.resources.displayMetrics)
+            }
+        }
+
+        fun resetState() {
+            cardView.animate().cancel()
+            isCurrentlyHovered = false
+            cardView.strokeWidth = 0
+            cardView.scaleX = 1.0f
+            cardView.scaleY = 1.0f
+            cardView.cardElevation = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 2f, itemView.context.resources.displayMetrics)
+        }
     }
 
     private fun formatVersion(version: String?): String? {
@@ -63,7 +139,12 @@ class TrackedAdapter(
 
         val pm = context.packageManager
         // Получаем все приложения, которые могут открыть эту ссылку
-        val activities = pm.queryIntentActivities(intent, PackageManager.MATCH_ALL)
+        val flags = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            PackageManager.MATCH_ALL
+        } else {
+            0
+        }
+        val activities = pm.queryIntentActivities(intent, flags)
         
         val targetIntents = mutableListOf<Intent>()
         for (resolveInfo in activities) {
@@ -111,20 +192,34 @@ class TrackedAdapter(
         }
     }
 
+    private var lastDragTimeProvider: () -> Long = { 0L }
+
+    fun setLastDragTimeProvider(provider: () -> Long) {
+        this.lastDragTimeProvider = provider
+    }
+
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
         val app = getItem(position)
         // Сбрасываем возможные изменения от ItemTouchHelper при переиспользовании
         holder.itemView.alpha = 1.0f
         holder.itemView.scaleX = 1.0f
         holder.itemView.scaleY = 1.0f
+        holder.itemView.translationX = 0f
+        holder.itemView.translationY = 0f
         
         if (holder is FolderViewHolder) {
+            holder.resetState()
             holder.textFolderName.text = app.appName
-            holder.itemView.setOnClickListener { onFolderClick(app.appName!!) }
+            holder.itemView.setOnClickListener {
+                if (System.currentTimeMillis() - lastDragTimeProvider() < 300) return@setOnClickListener
+                onFolderClick(app.appName!!)
+            }
             holder.itemView.setOnLongClickListener {
+                if (System.currentTimeMillis() - lastDragTimeProvider() < 300) return@setOnLongClickListener true
                 onLongClick(app)
                 true
             }
+            holder.btnEdit.setOnClickListener { onLongClick(app) }
             holder.btnDelete.setOnClickListener { onDelete(app) }
         } else if (holder is ViewHolder) {
             holder.textAppName.text = app.appName ?: "Без названия"
@@ -167,8 +262,21 @@ class TrackedAdapter(
                 holder.btnSpacer.visibility = View.GONE
             }
 
-            holder.itemView.setOnClickListener { onClick(app) }
+            holder.itemView.setOnClickListener {
+                if (System.currentTimeMillis() - lastDragTimeProvider() < 300) return@setOnClickListener
+                onClick(app)
+            }
+
+            holder.itemView.setOnLongClickListener {
+                if (System.currentTimeMillis() - lastDragTimeProvider() < 300) return@setOnLongClickListener true
+                onLongClick(app)
+                true
+            }
             
+            holder.btnEdit.setOnClickListener {
+                onLongClick(app)
+            }
+
             holder.btnClose.setOnClickListener {
                 onDelete(app)
             }
@@ -181,13 +289,6 @@ class TrackedAdapter(
                 openUrl(it, app.topicUrl)
             }
         }
-    }
-
-    fun moveItem(fromPosition: Int, toPosition: Int) {
-        val list = currentList.toMutableList()
-        val item = list.removeAt(fromPosition)
-        list.add(toPosition, item)
-        submitList(list)
     }
 
     class DiffCallback : DiffUtil.ItemCallback<TrackedApp>() {

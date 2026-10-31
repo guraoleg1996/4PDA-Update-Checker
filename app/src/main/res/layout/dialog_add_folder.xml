@@ -25,7 +25,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
-        android:hint="Родительская папка">
+        android:hint="Расположение">
 
         <AutoCompleteTextView
             android:id="@+id/editParentFolder"
@@ -36,5 +36,14 @@
             android:inputType="text" />
 
     </com.google.android.material.textfield.TextInputLayout>
+
+    <EditText
+        android:id="@+id/editCustomParentFolder"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:hint="Укажите свой путь (например, Игры/RPG)"
+        android:inputType="text"
+        android:visibility="gone" />
 
 </LinearLayout>

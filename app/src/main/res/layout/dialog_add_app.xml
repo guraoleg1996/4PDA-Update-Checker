@@ -53,7 +53,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
-        android:hint="Папка">
+        android:hint="Расположение">
 
         <AutoCompleteTextView
             android:id="@+id/editFolderName"
@@ -65,13 +65,13 @@
 
     </com.google.android.material.textfield.TextInputLayout>
 
-    <TextView
+    <EditText
+        android:id="@+id/editCustomFolderName"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:text="Можно вводить путь через / (например, Мои приложения/Социальные сети)"
-        android:textSize="11sp"
-        android:textColor="#888888"
-        android:layout_marginStart="4dp" />
+        android:layout_marginTop="8dp"
+        android:hint="Укажите свой путь (например, Игры/RPG)"
+        android:inputType="text"
+        android:visibility="gone" />
 
 </LinearLayout>

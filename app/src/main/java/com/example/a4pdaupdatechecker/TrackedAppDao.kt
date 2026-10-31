@@ -5,10 +5,10 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface TrackedAppDao {
-    @Query("SELECT * FROM tracked_apps WHERE folderName IS :folder ORDER BY isFolder DESC, sortOrder ASC")
+    @Query("SELECT * FROM tracked_apps WHERE folderName IS :folder ORDER BY sortOrder ASC")
     fun getInFolder(folder: String?): Flow<List<TrackedApp>>
 
-    @Query("SELECT * FROM tracked_apps WHERE folderName IS :folder ORDER BY isFolder DESC, sortOrder ASC")
+    @Query("SELECT * FROM tracked_apps WHERE folderName IS :folder ORDER BY sortOrder ASC")
     suspend fun getInFolderList(folder: String?): List<TrackedApp>
 
     @Query("SELECT * FROM tracked_apps ORDER BY sortOrder ASC")
@@ -46,6 +46,9 @@ interface TrackedAppDao {
 
     @Query("SELECT DISTINCT appName FROM tracked_apps WHERE isFolder = 1")
     fun getAllFolders(): Flow<List<String>>
+
+    @Query("SELECT * FROM tracked_apps WHERE isFolder = 1")
+    suspend fun getAllFolderEntities(): List<TrackedApp>
 
     @Query("SELECT * FROM tracked_apps WHERE appName = :name AND isFolder = 1 LIMIT 1")
     suspend fun getFolderByName(name: String): TrackedApp?

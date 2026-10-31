@@ -11,6 +11,7 @@ import android.view.LayoutInflater
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.view.ViewConfiguration
 import android.widget.ArrayAdapter
 import android.widget.AutoCompleteTextView
 import android.widget.EditText
@@ -31,9 +32,18 @@ import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import android.os.Build
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        private const val MAIN_SCREEN_OPTION = "Главный экран"
+        private const val CUSTOM_OPTION = "Своё..."
+    }
 
     private lateinit var trackedAdapter: TrackedAdapter
     private lateinit var database: AppDatabase
@@ -41,11 +51,71 @@ class MainActivity : AppCompatActivity() {
     private var currentFolderName: String? = null
     private var loadDataJob: Job? = null
 
-    private var hoveredFolderPosition: Int = -1
-    private var potentialMergeTargetPosition: Int = -1
-    private var potentialMergeTargetItem: TrackedApp? = null
-    private var lastMoveTime: Long = 0
-    private var lastTargetPos: Int = -1
+    private var hoveredFolderTarget: TrackedApp? = null
+    private var isMovedDuringDrag: Boolean = false
+    private var draggedInitialPosition: Int = -1
+    private var draggedItem: TrackedApp? = null
+    private var currentDraggedViewHolder: RecyclerView.ViewHolder? = null
+    private var lastDragOrLongPressTime: Long = 0L
+
+    private fun findHoveredFolder(
+        recyclerView: RecyclerView,
+        draggedHolder: RecyclerView.ViewHolder,
+        draggedTop: Float,
+        draggedBottom: Float
+    ): Pair<RecyclerView.ViewHolder, TrackedApp>? {
+        val currentDragItem = draggedItem ?: run {
+            val pos = draggedHolder.bindingAdapterPosition
+            if (pos != RecyclerView.NO_POSITION && pos in trackedAdapter.currentItems.indices) {
+                trackedAdapter.getItem(pos)
+            } else null
+        }
+
+        val draggedCenterY = (draggedTop + draggedBottom) / 2f
+
+        for (i in 0 until recyclerView.childCount) {
+            val child = recyclerView.getChildAt(i)
+            if (child == draggedHolder.itemView) continue
+
+            val holder = recyclerView.getChildViewHolder(child)
+            val pos = holder.bindingAdapterPosition
+            if (pos == RecyclerView.NO_POSITION || pos !in trackedAdapter.currentItems.indices) continue
+
+            val folderItem = trackedAdapter.getItem(pos)
+            if (!folderItem.isFolder) continue
+
+            // Cannot drop into itself
+            if (currentDragItem != null && currentDragItem.topicUrl == folderItem.topicUrl) continue
+            if (currentDragItem != null && currentDragItem.isFolder && currentDragItem.appName == folderItem.appName) continue
+
+            val childTop = child.top + child.translationY
+            val childBottom = childTop + child.height
+            val childCenterY = (childTop + childBottom) / 2f
+
+            val overlapTop = maxOf(draggedTop, childTop)
+            val overlapBottom = minOf(draggedBottom, childBottom)
+            val overlapHeight = maxOf(0f, overlapBottom - overlapTop)
+
+            val isOverFolder = overlapHeight >= child.height * 0.4f ||
+                    (childCenterY in draggedTop..draggedBottom) ||
+                    (draggedCenterY in childTop..childBottom)
+
+            if (isOverFolder) {
+                return Pair(holder, folderItem)
+            }
+        }
+        return null
+    }
+
+    private fun updateFolderHighlights(recyclerView: RecyclerView, activeFolderHolder: RecyclerView.ViewHolder?) {
+        for (i in 0 until recyclerView.childCount) {
+            val child = recyclerView.getChildAt(i)
+            val holder = recyclerView.getChildViewHolder(child)
+            if (holder is TrackedAdapter.FolderViewHolder) {
+                holder.setHovered(holder == activeFolderHolder)
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         ThemeHelper.applyTheme(this)
@@ -103,7 +173,7 @@ class MainActivity : AppCompatActivity() {
         val recyclerView = findViewById<RecyclerView>(R.id.recyclerView)
         trackedAdapter = TrackedAdapter(
             onDelete = { app -> showDeleteConfirmation(app) },
-            onClick = { app -> if (app.isFolder) showEditFolderDialog(app) else showEditAppDialog(app) },
+            onClick = { app -> if (app.isFolder) onFolderClick(app) else showEditAppDialog(app) },
             onLongClick = { app -> if (app.isFolder) showEditFolderDialog(app) else showEditAppDialog(app) },
             onFolderClick = { folderName -> 
                 currentFolderName = folderName
@@ -113,14 +183,49 @@ class MainActivity : AppCompatActivity() {
                 loadData()
             }
         )
+        trackedAdapter.setLastDragTimeProvider { lastDragOrLongPressTime }
         recyclerView.layoutManager = LinearLayoutManager(this)
         recyclerView.adapter = trackedAdapter
+        recyclerView.setChildDrawingOrderCallback { childCount, i ->
+            val draggedView = currentDraggedViewHolder?.itemView
+            if (draggedView == null) return@setChildDrawingOrderCallback i
+            val draggedIndex = recyclerView.indexOfChild(draggedView)
+            if (draggedIndex == -1) return@setChildDrawingOrderCallback i
+
+            if (i == childCount - 1) {
+                draggedIndex
+            } else if (i >= draggedIndex) {
+                i + 1
+            } else {
+                i
+            }
+        }
 
         val itemTouchHelper = ItemTouchHelper(object : ItemTouchHelper.Callback() {
             override fun getMovementFlags(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder): Int {
                 val dragFlags = ItemTouchHelper.UP or ItemTouchHelper.DOWN
                 val swipeFlags = 0
                 return makeMovementFlags(dragFlags, swipeFlags)
+            }
+
+            override fun chooseDropTarget(
+                selected: RecyclerView.ViewHolder,
+                dropTargets: MutableList<RecyclerView.ViewHolder>,
+                curX: Int,
+                curY: Int
+            ): RecyclerView.ViewHolder? {
+                val draggedTop = curY.toFloat()
+                val draggedBottom = (curY + selected.itemView.height).toFloat()
+                val hovered = findHoveredFolder(recyclerView, selected, draggedTop, draggedBottom)
+
+                hoveredFolderTarget = hovered?.second
+
+                if (hovered != null) {
+                    dropTargets.removeAll { it == hovered.first }
+                }
+
+                if (dropTargets.isEmpty()) return null
+                return super.chooseDropTarget(selected, dropTargets, curX, curY)
             }
 
             override fun onMove(
@@ -132,13 +237,14 @@ class MainActivity : AppCompatActivity() {
                 val toPos = target.bindingAdapterPosition
                 if (fromPos == RecyclerView.NO_POSITION || toPos == RecyclerView.NO_POSITION) return false
 
-                val targetItem = trackedAdapter.currentList.getOrNull(toPos)
-                if (targetItem != null && targetItem != potentialMergeTargetItem) {
-                    potentialMergeTargetItem = targetItem
-                    potentialMergeTargetPosition = toPos
-                    lastMoveTime = System.currentTimeMillis()
+                if (hoveredFolderTarget != null) {
+                    val targetItem = trackedAdapter.getItem(toPos)
+                    if (targetItem.topicUrl == hoveredFolderTarget?.topicUrl) {
+                        return false
+                    }
                 }
 
+                isMovedDuringDrag = true
                 trackedAdapter.moveItem(fromPos, toPos)
                 return true
             }
@@ -148,9 +254,20 @@ class MainActivity : AppCompatActivity() {
             override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
                 super.onSelectedChanged(viewHolder, actionState)
                 if (actionState == ItemTouchHelper.ACTION_STATE_DRAG) {
-                    viewHolder?.itemView?.alpha = 0.8f
-                    viewHolder?.itemView?.scaleX = 1.05f
-                    viewHolder?.itemView?.scaleY = 1.05f
+                    currentDraggedViewHolder = viewHolder
+                    lastDragOrLongPressTime = System.currentTimeMillis()
+                    isMovedDuringDrag = false
+                    draggedInitialPosition = viewHolder?.bindingAdapterPosition ?: -1
+                    draggedItem = if (draggedInitialPosition != RecyclerView.NO_POSITION && draggedInitialPosition in trackedAdapter.currentItems.indices) {
+                        trackedAdapter.getItem(draggedInitialPosition)
+                    } else null
+                    hoveredFolderTarget = null
+                    updateFolderHighlights(recyclerView, null)
+
+                    viewHolder?.itemView?.alpha = 0.95f
+                    viewHolder?.itemView?.scaleX = 1.04f
+                    viewHolder?.itemView?.scaleY = 1.04f
+                    viewHolder?.itemView?.translationZ = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics)
                 }
             }
 
@@ -165,77 +282,80 @@ class MainActivity : AppCompatActivity() {
             ) {
                 super.onChildDraw(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive)
 
-                if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && isCurrentlyActive) {
-                    val draggedView = viewHolder.itemView
-                    // Центр перетаскиваемого элемента по вертикали
-                    val centerY = draggedView.top + dY + draggedView.height / 2
-
-                    var found = false
-                    for (i in 0 until recyclerView.childCount) {
-                        val child = recyclerView.getChildAt(i)
-                        if (child == draggedView) continue
-
-                        // Проверяем, находится ли центр перетаскиваемого элемента близко к центру цели
-                        // (в пределах 20% высоты цели), чтобы отличить "наложение" от "сортировки"
-                        val childCenterY = child.top + child.height / 2
-                        val tolerance = child.height * 0.2f
-
-                        if (centerY > childCenterY - tolerance && centerY < childCenterY + tolerance) {
-                            val targetPos = recyclerView.getChildAdapterPosition(child)
-                            val targetItem = trackedAdapter.currentList.getOrNull(targetPos)
-                            
-                            if (targetItem != null && targetItem != potentialMergeTargetItem) {
-                                potentialMergeTargetItem = targetItem
-                                potentialMergeTargetPosition = targetPos
-                                lastMoveTime = System.currentTimeMillis()
-                            }
-                            found = true
-                            break
-                        }
+                if (actionState == ItemTouchHelper.ACTION_STATE_DRAG) {
+                    val touchSlop = ViewConfiguration.get(this@MainActivity).scaledTouchSlop * 2
+                    if (Math.hypot(dX.toDouble(), dY.toDouble()) > touchSlop) {
+                        isMovedDuringDrag = true
                     }
-                    if (!found) {
-                        potentialMergeTargetItem = null
-                        potentialMergeTargetPosition = -1
+
+                    if (isCurrentlyActive) {
+                        val draggedView = viewHolder.itemView
+                        val draggedTop = draggedView.top + dY
+                        val draggedBottom = draggedTop + draggedView.height
+                        val hovered = findHoveredFolder(recyclerView, viewHolder, draggedTop, draggedBottom)
+                        hoveredFolderTarget = hovered?.second
+                        updateFolderHighlights(recyclerView, hovered?.first)
                     }
                 }
             }
 
             override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
                 super.clearView(recyclerView, viewHolder)
+                lastDragOrLongPressTime = System.currentTimeMillis()
+
+                updateFolderHighlights(recyclerView, null)
+
+                currentDraggedViewHolder = null
+                viewHolder.itemView.animate().cancel()
                 viewHolder.itemView.alpha = 1.0f
                 viewHolder.itemView.scaleX = 1.0f
                 viewHolder.itemView.scaleY = 1.0f
-                
+                viewHolder.itemView.translationX = 0f
+                viewHolder.itemView.translationY = 0f
+                viewHolder.itemView.translationZ = 0f
+                if (viewHolder is TrackedAdapter.FolderViewHolder) {
+                    viewHolder.cardView.cardElevation = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 2f, resources.displayMetrics)
+                } else {
+                    viewHolder.itemView.elevation = 0f
+                }
+
                 val pos = viewHolder.bindingAdapterPosition
-                val timeSinceLastMove = System.currentTimeMillis() - lastMoveTime
-                val targetItem = potentialMergeTargetItem
-                
-                if (pos != RecyclerView.NO_POSITION && targetItem != null && timeSinceLastMove > 500) {
-                    val draggedItem = trackedAdapter.currentList[pos]
-                    
-                    if (targetItem != draggedItem) {
-                        if (targetItem.isFolder) {
-                            lifecycleScope.launch {
-                                if (draggedItem.isFolder && isDescendantOf(targetItem, draggedItem)) {
-                                    Toast.makeText(this@MainActivity, "Нельзя переместить папку саму в себя", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    showMoveToFolderDialog(draggedItem, targetItem)
-                                }
-                            }
-                        } else if (!draggedItem.isFolder) {
-                            showMergeDialog(draggedItem, targetItem)
+                val currentItem = if (pos != RecyclerView.NO_POSITION && pos in trackedAdapter.currentItems.indices) {
+                    trackedAdapter.getItem(pos)
+                } else draggedItem
+
+                val targetFolder = hoveredFolderTarget
+                hoveredFolderTarget = null
+
+                if (currentItem != null && targetFolder != null && targetFolder.topicUrl != currentItem.topicUrl) {
+                    val index = trackedAdapter.currentItems.indexOfFirst { it.topicUrl == currentItem.topicUrl }
+                    if (index != -1) {
+                        trackedAdapter.removeItem(index)
+                    }
+                    saveNewOrder()
+
+                    lifecycleScope.launch {
+                        if (currentItem.isFolder && isDescendantOf(targetFolder, currentItem)) {
+                            Toast.makeText(this@MainActivity, "Нельзя переместить папку саму в себя", Toast.LENGTH_SHORT).show()
+                            loadData()
+                        } else {
+                            moveAppToFolder(currentItem, targetFolder.appName)
                         }
                     }
+                } else {
+                    if (!isMovedDuringDrag && currentItem != null && draggedInitialPosition == pos) {
+                        if (currentItem.isFolder) {
+                            showEditFolderDialog(currentItem)
+                        } else {
+                            showEditAppDialog(currentItem)
+                        }
+                    } else if (isMovedDuringDrag) {
+                        saveNewOrder()
+                    }
                 }
-                
-                hoveredFolderPosition = -1
-                potentialMergeTargetPosition = -1
-                potentialMergeTargetItem = null
-                saveNewOrder()
 
-                // Форсируем перерисовку для устранения "глюков" наложения карточек
+                draggedItem = null
                 recyclerView.invalidateItemDecorations()
-                recyclerView.post { trackedAdapter.notifyDataSetChanged() }
             }
 
             override fun interpolateOutOfBoundsScroll(
@@ -298,8 +418,19 @@ class MainActivity : AppCompatActivity() {
         }
 
         loadData()
-        Toast.makeText(this, "Обновление данных...", Toast.LENGTH_SHORT).show()
-        refreshAll()
+        if (savedInstanceState == null) {
+            Toast.makeText(this, "Обновление данных...", Toast.LENGTH_SHORT).show()
+            refreshAll()
+        }
+    }
+
+    private fun onFolderClick(folder: TrackedApp) {
+        val name = folder.appName ?: return
+        currentFolderName = name
+        supportActionBar?.title = name
+        supportActionBar?.setDisplayHomeAsUpEnabled(true)
+        supportActionBar?.setHomeAsUpIndicator(R.drawable.ic_back)
+        loadData()
     }
 
     private fun navigateBack() {
@@ -319,13 +450,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun isDescendantOf(folder: TrackedApp, potentialAncestor: TrackedApp): Boolean {
-        var current: TrackedApp? = folder
-        while (current != null) {
-            if (current.appName == potentialAncestor.appName) return true
-            current = current.folderName?.let { database.trackedAppDao().getFolderByName(it) }
+    private suspend fun isDescendantOfByName(
+        folderName: String,
+        potentialAncestorName: String,
+        allFolders: List<TrackedApp>? = null
+    ): Boolean {
+        var currentName: String? = folderName
+        val foldersMap = (allFolders ?: database.trackedAppDao().getAllFolderEntities()).associateBy { it.appName }
+        val visited = mutableSetOf<String>()
+
+        while (currentName != null) {
+            if (currentName == potentialAncestorName) return true
+            if (!visited.add(currentName)) break
+            val currentFolder = foldersMap[currentName]
+            currentName = currentFolder?.folderName
         }
         return false
+    }
+
+    private suspend fun isDescendantOf(folder: TrackedApp, potentialAncestor: TrackedApp): Boolean {
+        val folderName = folder.appName ?: return false
+        val ancestorName = potentialAncestor.appName ?: return false
+        return isDescendantOfByName(folderName, ancestorName)
     }
 
     private fun loadData() {
@@ -337,20 +483,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showMoveToFolderDialog(app: TrackedApp, folder: TrackedApp) {
-        AlertDialog.Builder(this)
-            .setTitle("Переместить в папку?")
-            .setMessage("Переместить '${app.appName}' в папку '${folder.appName}'?")
-            .setPositiveButton("Да") { _, _ ->
-                moveAppToFolder(app, folder.appName)
-            }
-            .setNegativeButton("Нет", null)
-            .show()
-    }
-
     private fun moveAppToFolder(app: TrackedApp, folderName: String?) {
         lifecycleScope.launch(Dispatchers.IO) {
-            database.trackedAppDao().update(app.copy(folderName = folderName))
+            val maxOrder = database.trackedAppDao().getMaxSortOrder(folderName) ?: -1
+            database.trackedAppDao().update(app.copy(folderName = folderName, sortOrder = maxOrder + 1))
+            withContext(Dispatchers.Main) {
+                val targetText = folderName ?: MAIN_SCREEN_OPTION
+                Toast.makeText(this@MainActivity, "Перемещено в '$targetText'", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -398,17 +538,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun createFolderWithApps(folderName: String, app1: TrackedApp, app2: TrackedApp) {
         lifecycleScope.launch(Dispatchers.IO) {
-            val maxOrder = database.trackedAppDao().getMaxSortOrder(currentFolderName) ?: -1
-            val newFolder = TrackedApp(
-                topicUrl = "folder_$folderName",
-                appName = folderName,
-                isFolder = true,
-                folderName = currentFolderName,
-                sortOrder = maxOrder + 1
-            )
-            database.trackedAppDao().insert(newFolder)
-            database.trackedAppDao().update(app1.copy(folderName = folderName))
-            database.trackedAppDao().update(app2.copy(folderName = folderName))
+            val targetFolder = resolveFolderPath(folderName, currentFolderName) ?: folderName
+            database.trackedAppDao().update(app1.copy(folderName = targetFolder))
+            database.trackedAppDao().update(app2.copy(folderName = targetFolder))
         }
     }
 
@@ -450,20 +582,98 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun setupLocationDropdown(
+        autoCompleteTextView: AutoCompleteTextView,
+        customEditText: EditText?,
+        currentFolder: String?,
+        excludeFolder: String? = null
+    ) {
+        lifecycleScope.launch {
+            val allFolders = database.trackedAppDao().getAllFolderEntities()
+            val validFolderNames = allFolders.filter { folder ->
+                if (folder.appName == null) false
+                else if (excludeFolder == null) true
+                else folder.appName != excludeFolder && !isDescendantOfByName(folder.appName, excludeFolder, allFolders)
+            }.mapNotNull { it.appName }.distinct()
+
+            val dropdownOptions = mutableListOf(MAIN_SCREEN_OPTION)
+            dropdownOptions.addAll(validFolderNames)
+            dropdownOptions.add(CUSTOM_OPTION)
+
+            val adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_dropdown_item_1line, dropdownOptions)
+            autoCompleteTextView.setAdapter(adapter)
+
+            if (currentFolder == null) {
+                autoCompleteTextView.setText(MAIN_SCREEN_OPTION, false)
+                customEditText?.visibility = View.GONE
+            } else if (validFolderNames.contains(currentFolder)) {
+                autoCompleteTextView.setText(currentFolder, false)
+                customEditText?.visibility = View.GONE
+            } else {
+                autoCompleteTextView.setText(CUSTOM_OPTION, false)
+                customEditText?.visibility = View.VISIBLE
+                customEditText?.setText(currentFolder)
+            }
+
+            autoCompleteTextView.setOnItemClickListener { _, _, position, _ ->
+                val selected = adapter.getItem(position)
+                if (selected == CUSTOM_OPTION) {
+                    customEditText?.visibility = View.VISIBLE
+                    customEditText?.requestFocus()
+                } else {
+                    customEditText?.visibility = View.GONE
+                }
+            }
+        }
+    }
+
+    private fun getSelectedLocation(
+        autoCompleteTextView: AutoCompleteTextView,
+        customEditText: EditText?
+    ): String? {
+        val selectedText = autoCompleteTextView.text.toString().trim()
+        if (selectedText == CUSTOM_OPTION || (customEditText != null && customEditText.visibility == View.VISIBLE)) {
+            val customText = customEditText?.text?.toString()?.trim() ?: ""
+            return if (customText.isEmpty() || customText == MAIN_SCREEN_OPTION) null else customText
+        }
+        if (selectedText.isEmpty() || selectedText == MAIN_SCREEN_OPTION) {
+            return null
+        }
+        return selectedText
+    }
+
+    private suspend fun resolveFolderPath(path: String?, startParent: String? = null): String? {
+        if (path == null || path.trim().isEmpty() || path.trim() == MAIN_SCREEN_OPTION) return null
+        val parts = path.split("/").filter { it.isNotEmpty() }
+        var currentParent: String? = startParent
+
+        for (part in parts) {
+            val existing = database.trackedAppDao().getFolderByNameAndParent(part, currentParent)
+            if (existing == null) {
+                val maxOrder = database.trackedAppDao().getMaxSortOrder(currentParent) ?: -1
+                val newFolder = TrackedApp(
+                    topicUrl = "folder_${UUID.randomUUID()}",
+                    appName = part,
+                    isFolder = true,
+                    folderName = currentParent,
+                    sortOrder = maxOrder + 1
+                )
+                database.trackedAppDao().insert(newFolder)
+            }
+            currentParent = part
+        }
+        return currentParent
+    }
+
     private fun showAddAppDialog() {
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_add_app, null)
         val editUrl = view.findViewById<EditText>(R.id.editTopicUrl)
         val editAppName = view.findViewById<EditText>(R.id.editAppName)
         val editPackage = view.findViewById<EditText>(R.id.editPackageName)
         val editFolder = view.findViewById<AutoCompleteTextView>(R.id.editFolderName)
+        val editCustomFolder = view.findViewById<EditText>(R.id.editCustomFolderName)
 
-        editFolder.setText(currentFolderName)
-
-        lifecycleScope.launch {
-            val folders = database.trackedAppDao().getAllFolders().first()
-            val adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_dropdown_item_1line, folders)
-            editFolder.setAdapter(adapter)
-        }
+        setupLocationDropdown(editFolder, editCustomFolder, currentFolderName)
 
         val dialog = AlertDialog.Builder(this)
             .setTitle("Добавить ссылку на 4PDA")
@@ -477,16 +687,16 @@ class MainActivity : AppCompatActivity() {
             val url = editUrl.text.toString().trim()
             val name = editAppName.text.toString().trim().ifEmpty { null }
             val pkg = editPackage.text.toString().trim().ifEmpty { null }
-            val folder = editFolder.text.toString().trim().ifEmpty { null }
-            
+            val rawLocation = getSelectedLocation(editFolder, editCustomFolder)
+
             if (url.isEmpty()) {
                 editUrl.error = "Введите ссылку"
                 return@setOnClickListener
             }
-            
-            if (folder != null && !isValidPath(folder, editFolder)) return@setOnClickListener
-            
-            addNewApp(url, name, pkg, folder)
+
+            if (rawLocation != null && !isValidPath(rawLocation, editFolder)) return@setOnClickListener
+
+            addNewApp(url, name, pkg, rawLocation)
             dialog.dismiss()
         }
     }
@@ -495,14 +705,9 @@ class MainActivity : AppCompatActivity() {
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_add_folder, null)
         val editName = view.findViewById<EditText>(R.id.editFolderName)
         val editParent = view.findViewById<AutoCompleteTextView>(R.id.editParentFolder)
+        val editCustomParent = view.findViewById<EditText>(R.id.editCustomParentFolder)
 
-        editParent.setText(currentFolderName)
-
-        lifecycleScope.launch {
-            val folders = database.trackedAppDao().getAllFolders().first()
-            val adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_dropdown_item_1line, folders)
-            editParent.setAdapter(adapter)
-        }
+        setupLocationDropdown(editParent, editCustomParent, currentFolderName)
 
         val dialog = AlertDialog.Builder(this)
             .setTitle("Создать папку")
@@ -514,125 +719,96 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             val name = editName.text.toString().trim()
-            val parent = editParent.text.toString().trim().ifEmpty { null }
-            
+            val rawParent = getSelectedLocation(editParent, editCustomParent)
+
             if (name.isEmpty()) {
                 editName.error = "Введите название"
                 return@setOnClickListener
             }
-            
+
             if (!isValidPath(name, editName)) return@setOnClickListener
-            if (parent != null && !isValidPath(parent, editParent)) return@setOnClickListener
-            
-            addNewFolder(name, parent)
+            if (rawParent != null && !isValidPath(rawParent, editParent)) return@setOnClickListener
+
+            addNewFolder(name, rawParent)
             dialog.dismiss()
         }
     }
 
-    private fun addNewFolder(path: String, startParent: String? = currentFolderName) {
+    private fun addNewFolder(path: String, startParentLocation: String? = currentFolderName) {
         lifecycleScope.launch(Dispatchers.IO) {
-            val parts = path.split("/").filter { it.isNotEmpty() }
-            var currentParent: String? = startParent
-            
-            for (part in parts) {
-                val existing = database.trackedAppDao().getFolderByNameAndParent(part, currentParent)
-                if (existing == null) {
-                    val maxOrder = database.trackedAppDao().getMaxSortOrder(currentParent) ?: -1
-                    val newFolder = TrackedApp(
-                        topicUrl = "folder_${currentParent ?: "root"}_$part",
-                        appName = part,
-                        isFolder = true,
-                        folderName = currentParent,
-                        sortOrder = maxOrder + 1
-                    )
-                    database.trackedAppDao().insert(newFolder)
-                }
-                currentParent = part
-            }
+            val baseParent = resolveFolderPath(startParentLocation, currentFolderName)
+            resolveFolderPath(path, baseParent)
         }
     }
 
     private fun showEditFolderDialog(app: TrackedApp) {
-        val padding = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt()
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(padding, padding, padding, padding)
-        }
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_edit_folder, null)
+        val editName = view.findViewById<EditText>(R.id.editFolderName)
+        val editParent = view.findViewById<AutoCompleteTextView>(R.id.editParentFolder)
+        val editCustomParent = view.findViewById<EditText>(R.id.editCustomParentFolder)
 
-        val editText = EditText(this).apply {
-            setText(app.appName)
-        }
-        
-        val hintText = TextView(this).apply {
-            text = "Можно вводить путь через / (например, Мои игры/Action и RPG)"
-            textSize = 11f
-            setTextColor(Color.GRAY)
-        }
-
-        container.addView(editText)
-        container.addView(hintText)
+        editName.setText(app.appName)
+        setupLocationDropdown(editParent, editCustomParent, app.folderName, excludeFolder = app.appName)
 
         val dialog = AlertDialog.Builder(this)
             .setTitle("Редактировать папку")
-            .setView(container)
+            .setView(view)
             .setPositiveButton("Сохранить", null)
             .setNegativeButton("Отмена", null)
             .create()
 
         dialog.show()
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val newName = editText.text.toString().trim()
+            val newName = editName.text.toString().trim()
+            val rawParentLocation = getSelectedLocation(editParent, editCustomParent)
+
             if (newName.isEmpty()) {
-                editText.error = "Название не может быть пустым"
+                editName.error = "Название не может быть пустым"
                 return@setOnClickListener
             }
             if (newName.contains("/")) {
-                editText.error = "Название не должно содержать /"
+                editName.error = "Название папки не должно содержать /"
                 return@setOnClickListener
             }
-            if (newName != app.appName) {
-                lifecycleScope.launch(Dispatchers.IO) {
-                    database.trackedAppDao().update(app.copy(appName = newName))
-                    val children = database.trackedAppDao().getInFolderList(app.appName)
+
+            lifecycleScope.launch(Dispatchers.IO) {
+                val targetParentFolder = resolveFolderPath(rawParentLocation, currentFolderName)
+                val oldName = app.appName
+
+                if (targetParentFolder != null && oldName != null) {
+                    if (targetParentFolder == oldName || isDescendantOfByName(targetParentFolder, oldName)) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(this@MainActivity, "Нельзя переместить папку в себя или в свою подпапку", Toast.LENGTH_SHORT).show()
+                        }
+                        return@launch
+                    }
+                }
+
+                var updatedApp = app.copy(folderName = targetParentFolder)
+
+                if (newName != oldName && oldName != null) {
+                    updatedApp = updatedApp.copy(appName = newName)
+                    val children = database.trackedAppDao().getInFolderList(oldName)
                     database.trackedAppDao().updateAll(children.map { it.copy(folderName = newName) })
                 }
+                database.trackedAppDao().update(updatedApp)
+                withContext(Dispatchers.Main) {
+                    dialog.dismiss()
+                }
             }
-            dialog.dismiss()
         }
     }
 
     private fun addNewApp(topicUrl: String, manualName: String?, manualPackageName: String?, folderPath: String?) {
         lifecycleScope.launch(Dispatchers.IO) {
-            var lastFolder: String? = null
-            
-            if (folderPath != null) {
-                val parts = folderPath.split("/").filter { it.isNotEmpty() }
-                var currentParent: String? = null
-                
-                for (part in parts) {
-                    val existing = database.trackedAppDao().getFolderByNameAndParent(part, currentParent)
-                    if (existing == null) {
-                        val maxOrder = database.trackedAppDao().getMaxSortOrder(currentParent) ?: -1
-                        val newFolder = TrackedApp(
-                            topicUrl = "folder_${currentParent ?: "root"}_$part",
-                            appName = part,
-                            isFolder = true,
-                            folderName = currentParent,
-                            sortOrder = maxOrder + 1
-                        )
-                        database.trackedAppDao().insert(newFolder)
-                    }
-                    currentParent = part
-                    lastFolder = part
-                }
-            }
+            val targetFolder = resolveFolderPath(folderPath, currentFolderName)
 
             val appData = UpdateChecker.fetchAppData(topicUrl)
             val detectedName = manualName ?: appData.name
             val siteVersion = appData.version
             val detectedPackage = manualPackageName ?: appData.packageName
             val installedVersion = detectedPackage?.let { AppVersionHelper.getVersion(this@MainActivity, it) }
-            val maxOrder = database.trackedAppDao().getMaxSortOrder(lastFolder) ?: -1
+            val maxOrder = database.trackedAppDao().getMaxSortOrder(targetFolder) ?: -1
             
             val newApp = TrackedApp(
                 topicUrl = topicUrl,
@@ -642,7 +818,7 @@ class MainActivity : AppCompatActivity() {
                 installedVersion = installedVersion,
                 lastCheckTime = System.currentTimeMillis(),
                 sortOrder = maxOrder + 1,
-                folderName = lastFolder,
+                folderName = targetFolder,
                 isFolder = false
             )
             database.trackedAppDao().insert(newApp)
@@ -653,7 +829,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveNewOrder() {
-        val currentList = trackedAdapter.currentList
+        val currentList = trackedAdapter.currentItems
         lifecycleScope.launch(Dispatchers.IO) {
             database.trackedAppDao().updateAll(currentList.mapIndexed { index, app -> app.copy(sortOrder = index) })
         }
@@ -668,9 +844,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun isNetworkAvailable(): Boolean {
         val connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-        val network = connectivityManager.activeNetwork ?: return false
-        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val network = connectivityManager.activeNetwork ?: return false
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } else {
+            @Suppress("DEPRECATION")
+            val networkInfo = connectivityManager.activeNetworkInfo
+            @Suppress("DEPRECATION")
+            networkInfo != null && networkInfo.isConnected
+        }
     }
 
     private suspend fun refreshAppInternal(app: TrackedApp): Boolean {
@@ -713,27 +896,49 @@ class MainActivity : AppCompatActivity() {
                 return@launch
             }
 
+            val appsToCheck = withContext(Dispatchers.IO) {
+                database.trackedAppDao().getAllList().filter { !it.isFolder }
+            }
+
+            if (appsToCheck.isEmpty()) {
+                Toast.makeText(this@MainActivity, "Список пуст", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+
+            progressBar.isIndeterminate = false
+            progressBar.max = appsToCheck.size
+            progressBar.progress = 0
             progressBar.visibility = View.VISIBLE
-            var successCount = 0
-            var errorCount = 0
 
-            withContext(Dispatchers.IO) {
-                val apps = database.trackedAppDao().getAllList()
-                for (app in apps) {
-                    if (app.isFolder) continue
+            val semaphore = Semaphore(3)
+            val successCount = AtomicInteger(0)
+            val errorCount = AtomicInteger(0)
+            val completedCount = AtomicInteger(0)
 
-                    val success = refreshAppInternal(app)
-                    if (success) successCount++ else errorCount++
-                    delay(500)
+            coroutineScope {
+                val jobs = appsToCheck.map { app ->
+                    async(Dispatchers.IO) {
+                        semaphore.withPermit {
+                            val success = refreshAppInternal(app)
+                            if (success) successCount.incrementAndGet() else errorCount.incrementAndGet()
+                            val done = completedCount.incrementAndGet()
+                            withContext(Dispatchers.Main) {
+                                progressBar.progress = done
+                            }
+                        }
+                    }
                 }
+                jobs.awaitAll()
             }
 
             progressBar.visibility = View.GONE
             
-            val message = if (errorCount > 0) {
-                "Обновление завершено. Успешно: $successCount, с ошибкой: $errorCount"
+            val totalErrors = errorCount.get()
+            val totalSuccess = successCount.get()
+            val message = if (totalErrors > 0) {
+                "Обновление завершено. Успешно: $totalSuccess, с ошибкой: $totalErrors"
             } else {
-                "Обновление завершено ($successCount)"
+                "Обновление завершено ($totalSuccess)"
             }
             Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
         }
@@ -789,17 +994,12 @@ class MainActivity : AppCompatActivity() {
         val editAppName = view.findViewById<EditText>(R.id.editAppName)
         val editPackage = view.findViewById<EditText>(R.id.editPackageName)
         val editFolder = view.findViewById<AutoCompleteTextView>(R.id.editFolderName)
+        val editCustomFolder = view.findViewById<EditText>(R.id.editCustomFolderName)
 
         editUrl.setText(app.topicUrl)
         editAppName.setText(app.appName)
         editPackage.setText(app.packageName)
-        editFolder.setText(app.folderName)
-
-        lifecycleScope.launch {
-            val folders = database.trackedAppDao().getAllFolders().first()
-            val adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_dropdown_item_1line, folders)
-            editFolder.setAdapter(adapter)
-        }
+        setupLocationDropdown(editFolder, editCustomFolder, app.folderName)
 
         val dialog = AlertDialog.Builder(this)
             .setTitle("Редактировать")
@@ -813,16 +1013,17 @@ class MainActivity : AppCompatActivity() {
             val newUrl = editUrl.text.toString().trim()
             val newName = editAppName.text.toString().trim().ifEmpty { null }
             val newPkg = editPackage.text.toString().trim().ifEmpty { null }
-            val newFolder = editFolder.text.toString().trim().ifEmpty { null }
-            
+            val rawLocation = getSelectedLocation(editFolder, editCustomFolder)
+
             if (newUrl.isEmpty()) {
                 editUrl.error = "Введите ссылку"
                 return@setOnClickListener
             }
-            
-            if (newFolder != null && !isValidPath(newFolder, editFolder)) return@setOnClickListener
+
+            if (rawLocation != null && !isValidPath(rawLocation, editFolder)) return@setOnClickListener
 
             lifecycleScope.launch(Dispatchers.IO) {
+                val newFolder = resolveFolderPath(rawLocation, currentFolderName)
                 if (newUrl != app.topicUrl) {
                     database.trackedAppDao().delete(app)
                     val newApp = app.copy(topicUrl = newUrl, appName = newName, packageName = newPkg, folderName = newFolder, isFolder = false)
@@ -833,8 +1034,10 @@ class MainActivity : AppCompatActivity() {
                     database.trackedAppDao().update(updatedApp)
                     refreshApp(updatedApp)
                 }
+                withContext(Dispatchers.Main) {
+                    dialog.dismiss()
+                }
             }
-            dialog.dismiss()
         }
     }
 
